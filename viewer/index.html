@@ -509,6 +509,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Three.js MUST load before ForceGraph3D UMD -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+  <!-- ForceGraph3D UMD global (requires Three.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.0/dist/3d-force-graph.min.js"></script>
 </head>
 <body>
   <div id="starfield"></div>
@@ -561,9 +565,8 @@
     <div class="chat-answer empty" id="chat-answer" aria-live="polite"></div>
   </div>
 
-  <script type="module">
-    import ForceGraph3D from 'https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.0/dist/3d-force-graph.module.js';
-
+  <script>
+    // Use UMD global instead of module import
     // ─── Config ──────────────────────────────────────────────────────────
     const CONFIG = {
       nodeCount: 0,
@@ -746,16 +749,16 @@
 
     // ─── Custom node objects (glowing spheres with labels) ────────────────
     function createNodeObject(node) {
-      const group = document.createElement('div');
-      group.style.position = 'absolute';
-      group.style.pointerEvents = 'none';
+      const color = getGroupColor(node.group);
+
+      // Three.js Group to hold all node parts
+      const group = new THREE.Group();
 
       // Glow sprite
       const canvas = document.createElement('canvas');
       canvas.width = 64;
       canvas.height = 64;
       const ctx = canvas.getContext('2d');
-      const color = getGroupColor(node.group);
       const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
       gradient.addColorStop(0, color);
       gradient.addColorStop(0.4, color + '80');
@@ -771,7 +774,7 @@
       }));
       sprite.scale.set(12, 12, 1);
       sprite.renderOrder = 10;
-      group.appendChild(sprite);
+      group.add(sprite);
 
       // Core sphere (Three.js mesh)
       const geometry = new THREE.SphereGeometry(3.5, 16, 16);
@@ -783,7 +786,7 @@
       });
       const sphere = new THREE.Mesh(geometry, material);
       sphere.renderOrder = 5;
-      group.appendChild(sphere);
+      group.add(sphere);
 
       // Halo ring
       const ringGeo = new THREE.RingGeometry(5, 7, 32);
@@ -797,7 +800,7 @@
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
       ring.renderOrder = 8;
-      group.appendChild(ring);
+      group.add(ring);
 
       // Store references for animation
       node._threeObj = group;
@@ -1041,7 +1044,7 @@
         .replace(/</g, '<')
         .replace(/>/g, '>')
         .replace(/"/g, '"')
-        .replace(/'/g, ''');
+        .replace(/'/g, "'");
     }
 
     // ─── Chat brain ───────────────────────────────────────────────────────────
@@ -1239,54 +1242,54 @@
       // Add to graphData
       graphData.nodes.push(newNode);
 
-      // Create Three.js object at spawn position
-      const nodeObj = createNodeObject(newNode);
-      nodeObj.position.copy(spawnPos);
-
-      // Add to graph scene
-      const scene = graph.graphContainer(); // Get the Three.js scene
-      scene.add(nodeObj);
-
-      // Force graph to recognize new node
+      // Update graph - ForceGraph3D will create the Three.js object via nodeThreeObject
       graph.graphData(graphData);
 
-      // Pulse animation at spawn
-      let pulsePhase = 0;
-      function pulse() {
-        if (!newNode._sphere) return;
-        pulsePhase += 0.2;
-        const scale = 1 + Math.sin(pulsePhase) * 0.3;
-        newNode._sphere.scale.setScalar(scale);
-        if (newNode._ring) {
-          newNode._ring.material.opacity = 0.5 + Math.sin(pulsePhase) * 0.3;
-        }
-        if (pulsePhase < Math.PI * 4) {
-          requestAnimationFrame(pulse);
-        } else {
-          // Settle
-          newNode._sphere.scale.setScalar(1);
-          if (newNode._ring) newNode._ring.material.opacity = 0.3;
-        }
-      }
-      pulse();
-
-      // Fly camera to new node
-      const distance = 100;
-      const target = { x: spawnPos.x, y: spawnPos.y, z: spawnPos.z };
-      const cameraPos = {
-        x: spawnPos.x,
-        y: spawnPos.y + 30,
-        z: spawnPos.z + distance,
-      };
-      graph.cameraPosition(cameraPos, target, 1500);
-
-      // Open panel after camera arrives
+      // Get the newly created Three.js object and position it
       setTimeout(() => {
-        openPanel(newNode);
-      }, 1000);
+        const nodeObj = newNode._threeObj;
+        if (nodeObj) {
+          nodeObj.position.copy(spawnPos);
+        }
 
-      // Rebuild legend for new group
-      buildLegend();
+        // Pulse animation at spawn
+        let pulsePhase = 0;
+        function pulse() {
+          if (!newNode._sphere) return;
+          pulsePhase += 0.2;
+          const scale = 1 + Math.sin(pulsePhase) * 0.3;
+          newNode._sphere.scale.setScalar(scale);
+          if (newNode._ring) {
+            newNode._ring.material.opacity = 0.5 + Math.sin(pulsePhase) * 0.3;
+          }
+          if (pulsePhase < Math.PI * 4) {
+            requestAnimationFrame(pulse);
+          } else {
+            // Settle
+            if (newNode._sphere) newNode._sphere.scale.setScalar(1);
+            if (newNode._ring) newNode._ring.material.opacity = 0.3;
+          }
+        }
+        pulse();
+
+        // Fly camera to new node
+        const distance = 100;
+        const target = { x: spawnPos.x, y: spawnPos.y, z: spawnPos.z };
+        const cameraPos = {
+          x: spawnPos.x,
+          y: spawnPos.y + 30,
+          z: spawnPos.z + distance,
+        };
+        graph.cameraPosition(cameraPos, target, 1500);
+
+        // Open panel after camera arrives
+        setTimeout(() => {
+          openPanel(newNode);
+        }, 1000);
+
+        // Rebuild legend for new group
+        buildLegend();
+      }, 50); // Small delay for ForceGraph3D to create the object
     }
 
     function highlightChatNodes(nodeIds) {
@@ -1519,6 +1522,5 @@
     // Boot greeting after graph loads
     setTimeout(bootGreeting, 1500);
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.min.js"></script>
 </body>
 </html>

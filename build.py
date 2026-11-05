@@ -143,7 +143,7 @@ def main():
 
     # Write output
     graph_data = {"nodes": nodes, "links": links}
-    js_content = f"const GRAPH = {json.dumps(graph_data, ensure_ascii=False, separators=(',', ':'))};"
+    js_content = f"window.GRAPH = {json.dumps(graph_data, ensure_ascii=False, separators=(',', ':'))};"
 
     OUTPUT_FILE.write_text(js_content, encoding="utf-8")
     print(f"Generated {OUTPUT_FILE}")
