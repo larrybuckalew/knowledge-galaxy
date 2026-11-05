@@ -422,6 +422,26 @@
     }
     .chat-answer.empty { display: none; }
 
+    /* The one line the last phone call left on the desk. */
+    .desk-line {
+      margin-top: 8px;
+      padding: 9px 16px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-left: 2px solid var(--accent);
+      border-radius: 10px;
+      backdrop-filter: blur(20px);
+      font-size: 0.85rem;
+      line-height: 1.5;
+      color: var(--fg);
+      display: flex;
+      align-items: baseline;
+      gap: 9px;
+      animation: slideUp 0.3s ease;
+    }
+    .desk-line[hidden] { display: none; }
+    .desk-icon { color: var(--accent); flex: none; }
+
     .chat-answer-header {
       display: flex;
       align-items: center;
@@ -633,6 +653,10 @@
     </div>
     <div class="chat-status" id="chat-status" aria-live="polite"></div>
     <div class="chat-answer empty" id="chat-answer" aria-live="polite"></div>
+    <div class="desk-line" id="desk-line" aria-live="polite" hidden>
+      <span class="desk-icon" aria-hidden="true">&#9742;</span>
+      <span class="desk-text" id="desk-text"></span>
+    </div>
   </div>
 
   <script>
@@ -1702,6 +1726,35 @@
       }
     }
 
+    // ─── The desk ──────────────────────────────────────────────────────────
+    // One line, left by the last phone call. It is fetched, not pushed: the
+    // server has no way to reach into this page, and a page that listens to
+    // a socket can be fed a lie.
+    let deskAt = null;
+    let deskSeen = false;
+
+    async function pollDesk() {
+      try {
+        const res = await fetch('/desk');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data || !data.line) return;
+        if (data.at && data.at === deskAt) return;
+        deskAt = data.at;
+        const desk = document.getElementById('desk-line');
+        const text = document.getElementById('desk-text');
+        if (!desk || !text) return;
+        text.textContent = data.line;
+        desk.hidden = false;
+        // A line that is already on the desk when you arrive is shown, not
+        // announced. A line that ARRIVES while you watch is spoken.
+        if (deskSeen) speak(data.line);
+        deskSeen = true;
+      } catch (e) {
+        // The desk is a convenience. Failing to reach it is not worth a fuss.
+      }
+    }
+
     // ─── Init ────────────────────────────────────────────────────────────
     initTTS();
     initSTT();
@@ -1709,6 +1762,9 @@
     initGraph();
     // Boot greeting after graph loads
     setTimeout(bootGreeting, 1500);
+    // The desk is polled, not pushed
+    pollDesk();
+    setInterval(pollDesk, 10000);
   </script>
 </body>
 </html>

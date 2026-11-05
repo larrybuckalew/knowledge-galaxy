@@ -17,6 +17,7 @@ from http import HTTPStatus
 
 import actions
 import stt
+import telephony
 
 
 PORT = 4703
@@ -507,6 +508,10 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        # The one line left on the desk by the last phone call.
+        if self.path == '/desk':
+            self.send_json(HTTPStatus.OK, desk_line())
+            return
         # Block access to config.json and any file outside viewer/
         if self.path.startswith('/config.json') or '..' in Path(self.path.lstrip('/')).parts:
             self.send_error(403, "Forbidden")
@@ -639,6 +644,30 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         if question == "__BOOT__":
             print(f"DEBUG: Boot request received! question={repr(question)}", file=sys.stderr)
             self.handle_boot()
+            return
+
+        # "call me" is not a question about the notes. It is a request for
+        # the telephone, and it rings with the standing brief: the date,
+        # what is open on the desk, and the latest activity.
+        if is_call_request(question):
+            headline, notes = telephony.standing_brief()
+            try:
+                record = call_me(headline, notes)
+            except telephony.TelephonyError as exc:
+                answer = "I could not ring you, sir: %s" % exc
+                record = {}
+            else:
+                answer = "I am ringing you now, sir."
+            session["history"].append({"role": "user", "content": question})
+            session["history"].append({"role": "assistant", "content": answer})
+            self.send_json(HTTPStatus.OK, {
+                "answer": answer,
+                "nodes": [],
+                "session_id": session_id,
+                "is_note_question": False,
+                "action": None,
+                "call_id": record.get("call_id"),
+            })
             return
 
         # Score notes
@@ -838,7 +867,106 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
+# ─── The telephone ───────────────────────────────────────────────────────────
+# Jarvis can ring you. Retell is the provider; telephony.py holds the plumbing
+# and the rules for what the phone is allowed to say.
+#
+# The agent is handed the headline and the notes IN THE PROMPT, so it can only
+# ever answer from them. The call is then watched by polling Retell, and when
+# it ends the transcript becomes one spoken line for the desk.
+
+DESK_LINE = {"line": None, "call_id": None, "at": None}
+DESK_LOCK = threading.Lock()
+
+# "call me", "ring me", "phone me" - a request for the telephone, not a
+# question about the notes.
+CALL_REQUEST = re.compile(
+    r"\b(call me|ring me|phone me|call my phone|give me a call)\b",
+    re.IGNORECASE)
+
+
+def is_call_request(question):
+    """True when the question is actually a request to be rung."""
+    text = str(question or "").strip()
+    if not text:
+        return False
+    return bool(CALL_REQUEST.search(text))
+
+
+def set_desk_line(line, call_id=None):
+    """Put one line on the desk."""
+    with DESK_LOCK:
+        DESK_LINE["line"] = line
+        DESK_LINE["call_id"] = call_id
+        DESK_LINE["at"] = time.time()
+
+
+def desk_line():
+    """What is on the desk now."""
+    with DESK_LOCK:
+        return dict(DESK_LINE)
+
+
+def call_me(headline, notes):
+    """Render this call's script, push it to the agent, and ring the cell.
+
+    The headline and the notes are written into the prompt itself, so the
+    agent has nothing else to go on. Returns the call record; raises
+    telephony.TelephonyError if the phone is not set up, or if Retell
+    refuses.
+    """
+    missing = telephony.missing_pieces()
+    if missing:
+        raise telephony.TelephonyError(
+            "the phone is not set up yet (%s); run setup_phone.py, sir"
+            % ", ".join(missing))
+    script = telephony.render_prompt(headline, notes)
+    telephony.update_llm(telephony.llm_id(), script)
+    record = telephony.create_call(telephony.agent_id())
+    call_id = record.get("call_id")
+    watcher = threading.Thread(target=watch_call, args=(call_id,), daemon=True)
+    watcher.start()
+    return record
+
+
+def watch_call(call_id):
+    """Wait for the call to end, then put one spoken line on the desk."""
+    try:
+        record = telephony.wait_for_call(call_id)
+    except telephony.TelephonyError as exc:
+        set_desk_line("The call could not be watched, sir: %s" % exc, call_id)
+        return
+    transcript = telephony.call_summary(record)
+    if not transcript:
+        set_desk_line("The call ended with nothing said, sir.", call_id)
+        return
+    try:
+        summary = call_llm(
+            "Summarise this telephone call in ONE short spoken line for the "
+            "desk. No preamble, no quotation marks, no dashes. Here is the "
+            "transcript:\n\n%s" % transcript,
+            [], [], is_boot=False)
+    except Exception as exc:
+        summary = "The call is over, sir. %s" % exc
+    set_desk_line(telephony.speakable(str(summary).strip()), call_id)
+
+
+def write_pid_file():
+    """Remember which process is serving, so that a restart can find it.
+
+    The port table is not enough: Windows lets a second process bind the
+    same port, and then the old process keeps answering while the restart
+    believes it has worked. The pid file is written by the process itself,
+    so it names the one that is really serving.
+    """
+    try:
+        (PROJECT_ROOT / "server.pid").write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main():
+    write_pid_file()
     if not VIEWER_DIR.exists():
         print(f"Viewer directory not found: {VIEWER_DIR}", file=sys.stderr)
         sys.exit(1)
