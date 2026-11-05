@@ -463,6 +463,76 @@
       animation: spin 0.8s linear infinite;
     }
 
+    /* Action confirmation card */
+    .action-card {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border: 1px solid rgba(212, 168, 67, 0.35);
+      background: rgba(212, 168, 67, 0.07);
+      border-radius: 10px;
+    }
+    .action-card.needs-confirm {
+      border-color: rgba(231, 111, 81, 0.5);
+      background: rgba(231, 111, 81, 0.08);
+    }
+    .action-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .action-badge {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--accent);
+      border: 1px solid rgba(212, 168, 67, 0.4);
+      border-radius: 999px;
+      padding: 1px 8px;
+    }
+    .action-card.needs-confirm .action-badge {
+      color: #e76f51;
+      border-color: rgba(231, 111, 81, 0.45);
+    }
+    .action-desc {
+      font-size: 0.82rem;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      word-break: break-word;
+    }
+    .action-buttons {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .action-btn {
+      background: transparent;
+      border: 1px solid rgba(232, 230, 225, 0.25);
+      color: var(--text);
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 0.75rem;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s, opacity 0.15s;
+    }
+    .action-btn:hover:not(:disabled) { border-color: var(--accent); background: rgba(212, 168, 67, 0.1); }
+    .action-btn:disabled { opacity: 0.45; cursor: default; }
+    .action-btn.action-yes { border-color: rgba(212, 168, 67, 0.5); color: var(--accent); }
+    .action-btn.armed {
+      border-color: var(--accent);
+      background: rgba(212, 168, 67, 0.16);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .action-done {
+      font-size: 0.82rem;
+      color: var(--muted);
+      font-style: italic;
+    }
+    .action-done.ok { color: var(--accent); font-style: normal; }
+    .action-done.err { color: #e76f51; font-style: normal; }
+
     /* Voice */
     .chat-voice-btn {
       background: transparent;
@@ -686,8 +756,8 @@
       try {
         const res = await fetch('graph-data.js');
         const text = await res.text();
-        eval(text); // defines const GRAPH
-        graphData = GRAPH;
+        // graph-data.js is `window.GRAPH = {...};` - parse it, don't eval it
+        graphData = JSON.parse(text.replace(/^\s*window\.GRAPH\s*=\s*/, '').replace(/;\s*$/, ''));
         CONFIG.nodeCount = graphData.nodes.length;
         CONFIG.linkCount = graphData.links.length;
 
@@ -1040,11 +1110,11 @@
     // ─── Utilities ───────────────────────────────────────────────────────
     function escapeHtml(str) {
       return String(str)
-        .replace(/&/g, '&')
-        .replace(/</g, '<')
-        .replace(/>/g, '>')
-        .replace(/"/g, '"')
-        .replace(/'/g, "'");
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     // ─── Chat brain ───────────────────────────────────────────────────────────
@@ -1116,11 +1186,11 @@
     }
 
     function renderAnswer(data) {
-      const { answer, nodes, is_note_question } = data;
+      const { answer, nodes, is_note_question, action } = data;
       let html = '';
       if (is_note_question && nodes.length > 0) {
         html += `<div class="chat-answer-header">Answer <span style="color:var(--muted);">from ${nodes.length} note${nodes.length !== 1 ? 's' : ''}</span></div>`;
-        html += `<div>${escapeHtml(answer)}</div>`;
+        html += `<div class="chat-answer-text">${escapeHtml(answer)}</div>`;
         html += '<div class="chat-answer-sources">';
         for (const nid of nodes) {
           const node = graphData?.nodes?.find(n => n.id === nid);
@@ -1131,13 +1201,101 @@
         html += '</div>';
       } else {
         // Small talk / jokes - no sources header
-        html += `<div>${escapeHtml(answer)}</div>`;
+        html += `<div class="chat-answer-text">${escapeHtml(answer)}</div>`;
+      }
+      if (action) {
+        html += renderActionCard(action);
       }
       chatAnswer.innerHTML = html;
+      bindActionButtons();
+      console.log('[jarvis] card rendered status=', action && action.status);
+
+      // Read-only actions need no confirmation - just do them.
+      if (action && action.status === 'ready') {
+        runAction(chatAnswer.querySelector('.action-card'));
+      }
 
       // Visual proof: only for actual note questions with sources
       if (graph && graphData && is_note_question && nodes.length > 0) {
         proveAnswer(nodes);
+      }
+    }
+
+    // ─── Action confirmation ────────────────────────────────────────────────
+    let pendingAction = null;
+    let confirmArmed = false;
+    let armTimer = null;
+
+    function renderActionCard(action) {
+      pendingAction = action.action;
+      confirmArmed = false;
+      const needsConfirm = action.status === 'confirm_required';
+      return `
+        <div class="action-card${needsConfirm ? ' needs-confirm' : ''}">
+          <div class="action-head">
+            <span class="action-badge">${needsConfirm ? 'Confirmation needed' : 'Action'}</span>
+            <span class="action-desc">${escapeHtml(action.description)}</span>
+          </div>
+          <div class="action-buttons">
+            <button class="action-btn action-yes" data-action="yes">Yes, do it</button>
+            <button class="action-btn action-no" data-action="no">No, thank you</button>
+          </div>
+        </div>`;
+    }
+
+    function bindActionButtons() {
+      chatAnswer.querySelectorAll('.action-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const card = chatAnswer.querySelector('.action-card');          if (btn.dataset.action === 'no') {
+            pendingAction = null;
+            confirmArmed = false;
+            if (card) card.innerHTML = '<div class="action-done">Very good, sir. I shall refrain.</div>';
+            return;
+          }
+          // Two-step consent: the first click arms the button, the second
+          // commits. A stray, duplicated or replayed click can therefore
+          // never confirm an action on its own.
+          if (!confirmArmed) {
+            confirmArmed = true;
+            btn.textContent = 'Click again to confirm';
+            btn.classList.add('armed');
+            clearTimeout(armTimer);
+            armTimer = setTimeout(() => {
+              confirmArmed = false;
+              btn.textContent = 'Yes, do it';
+              btn.classList.remove('armed');
+            }, 15000);
+            return;
+          }
+          clearTimeout(armTimer);
+          confirmArmed = false;
+          chatAnswer.querySelectorAll('.action-btn').forEach(b => { b.disabled = true; });
+          await runAction(card);
+        });
+      });
+    }
+
+    async function runAction(card) {
+      if (!pendingAction) return;
+      if (card) card.innerHTML = '<div class="action-done">Working on it, sir…</div>';
+      try {
+        const res = await fetch('/act', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: pendingAction, confirm: true }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Action failed');
+        pendingAction = null;
+        if (data.status === 'ok') {
+          const msg = data.message || 'Done, sir.';
+          if (card) card.innerHTML = `<div class="action-done ok">${escapeHtml(msg)}</div>`;
+          speak(msg);
+        } else {
+          if (card) card.innerHTML = `<div class="action-done err">${escapeHtml(data.error || 'That did not work, sir.')}</div>`;
+        }
+      } catch (e) {
+        if (card) card.innerHTML = `<div class="action-done err">${escapeHtml(e.message)}</div>`;
       }
     }
 
@@ -1374,83 +1532,114 @@
       speechSynthesis.speak(utter);
     }
 
-    // ─── Voice: Speech Recognition (STT) ───────────────────────────────────
-    let recognition = null;
+    // ─── Voice: local speech-to-text (MediaRecorder -> /transcribe) ─────────
+    // Chrome's built-in SpeechRecognition sends audio to Google and fails with
+    // a "network" error when that service is unreachable. We record locally
+    // instead and let the server run Whisper, so the mic works offline.
+    let mediaRecorder = null;
+    let mediaStream = null;
+    let audioChunks = [];
     let isListening = false;
+    let recorderMime = '';
     const voiceBtn = document.getElementById('chat-voice');
     const statusEl = document.getElementById('chat-status');
 
     function initSTT() {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
         voiceBtn.style.display = 'none';
         return;
       }
-      recognition = new SpeechRecognition();
-      recognition.lang = 'en-GB';
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-
-      recognition.onstart = () => {
-        isListening = true;
-        voiceBtn.classList.add('listening');
-        statusEl.innerHTML = '<span class="chat-status-dot listening"></span>● listening…';
-      };
-
-      recognition.onend = () => {
-        isListening = false;
-        voiceBtn.classList.remove('listening');
-      };
-
-      recognition.onerror = (e) => {
-        isListening = false;
-        voiceBtn.classList.remove('listening');
-        if (e.error !== 'no-speech' && e.error !== 'aborted') {
-          statusEl.innerHTML = `<span style="color:#e76f51">Mic error: ${escapeHtml(e.error)}</span>`;
-          setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
-        } else {
-          statusEl.innerHTML = '';
+      const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+      for (const type of candidates) {
+        if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) {
+          recorderMime = type;
+          break;
         }
-      };
-
-      let finalTranscript = '';
-      recognition.onresult = (e) => {
-        let interim = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const transcript = e.results[i][0].transcript;
-          if (e.results[i].isFinal) {
-            finalTranscript += transcript;
-          } else {
-            interim += transcript;
-          }
-        }
-        if (interim) {
-          statusEl.innerHTML = `<span class="chat-status-dot listening"></span>● ${escapeHtml(interim)}`;
-        }
-        if (finalTranscript) {
-          chatInput.value = finalTranscript.trim();
-        }
-      };
+      }
     }
 
-    function toggleListening() {
-      if (!recognition) return;
+    function suffixFor(mime) {
+      if (mime.includes('mp4')) return '.mp4';
+      if (mime.includes('ogg')) return '.ogg';
+      return '.webm';
+    }
+
+    async function toggleListening() {
       if (isListening) {
-        recognition.stop();
+        stopRecording();
         return;
       }
-      // Ensure audio context is unlocked (first user interaction)
-      if (speechSynthesis.getVoices().length === 0) {
-        speechSynthesis.getVoices(); // trigger
-      }
-      finalTranscript = '';
-      chatInput.value = '';
-      statusEl.innerHTML = '<span class="chat-status-dot listening"></span>● listening…';
       try {
-        recognition.start();
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (e) {
-        // Already started
+        statusEl.innerHTML = `<span style="color:#e76f51">Mic unavailable: ${escapeHtml(e.message)}</span>`;
+        setTimeout(() => { statusEl.innerHTML = ''; }, 4000);
+        return;
+      }
+      audioChunks = [];
+      try {
+        mediaRecorder = recorderMime
+          ? new MediaRecorder(mediaStream, { mimeType: recorderMime })
+          : new MediaRecorder(mediaStream);
+      } catch (e) {
+        stopStream();
+        statusEl.innerHTML = `<span style="color:#e76f51">Mic error: ${escapeHtml(e.message)}</span>`;
+        setTimeout(() => { statusEl.innerHTML = ''; }, 4000);
+        return;
+      }
+      mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) audioChunks.push(e.data); };
+      mediaRecorder.onstop = transcribeRecording;
+      mediaRecorder.start();
+      isListening = true;
+      voiceBtn.classList.add('listening');
+      statusEl.innerHTML = '<span class="chat-status-dot listening"></span>● listening… (click again to stop)';
+    }
+
+    function stopStream() {
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+      stopStream();
+      isListening = false;
+      voiceBtn.classList.remove('listening');
+      statusEl.innerHTML = '<span class="chat-status-dot thinking"></span>● transcribing…';
+    }
+
+    async function transcribeRecording() {
+      const blob = new Blob(audioChunks, { type: recorderMime || 'audio/webm' });
+      audioChunks = [];
+      if (!blob.size) {
+        statusEl.innerHTML = '';
+        return;
+      }
+      try {
+        const res = await fetch('/transcribe', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Audio-Suffix': suffixFor(blob.type),
+          },
+          body: blob,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Transcription failed');
+        if (data.text && data.text.trim()) {
+          chatInput.value = data.text.trim();
+          chatInput.focus();
+          statusEl.innerHTML = '<span class="chat-status-dot thinking"></span>● ready';
+          setTimeout(() => { statusEl.innerHTML = ''; }, 1500);
+        } else {
+          statusEl.innerHTML = '<span style="color:#e76f51">Didn\'t catch that, sir.</span>';
+          setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
+        }
+      } catch (e) {
+        statusEl.innerHTML = `<span style="color:#e76f51">Mic error: ${escapeHtml(e.message)}</span>`;
+        setTimeout(() => { statusEl.innerHTML = ''; }, 4000);
       }
     }
 
@@ -1474,10 +1663,9 @@
       statusEl.innerHTML = '<span class="chat-status-dot thinking"></span>● thinking…';
       try {
         await originalSendChat(question);
-        // Speak the answer after rendering
-        const answerText = chatAnswer.textContent || '';
-        // Clean up: remove "Answer from X notes" prefix
-        const cleanAnswer = answerText.replace(/^Answer from \d+ notes?\s*/, '').trim();
+        // Speak only the answer sentence - not the action card or its buttons.
+        const answerEl = chatAnswer.querySelector('.chat-answer-text');
+        const cleanAnswer = answerEl ? answerEl.textContent.trim() : '';
         if (cleanAnswer) speak(cleanAnswer);
         statusEl.innerHTML = '';
       } catch (e) {

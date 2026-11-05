@@ -5,7 +5,6 @@ Serves ONLY the viewer/ folder on port 4700. config.json stays in project root.
 """
 
 import http.server
-import socketserver
 import os
 import sys
 import json
@@ -15,6 +14,9 @@ import threading
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from http import HTTPStatus
+
+import actions
+import stt
 
 
 PORT = 4703
@@ -34,9 +36,38 @@ def load_config():
 
 
 CONFIG = load_config()
-API_KEY = CONFIG.get("api_key", "")
-MODEL = CONFIG.get("model", "meta-llama/llama-3.1-8b-instruct:free")
-PROVIDER = CONFIG.get("provider", "anthropic")  # "anthropic" or "openrouter"
+PROVIDER = CONFIG.get("provider", "ollama")  # "ollama" | "openrouter" | "anthropic"
+
+# ─── Provider settings ───────────────────────────────────────────────────
+# config.json may nest per-provider settings. The legacy flat keys
+# (api_key / model) are still honoured as a fallback.
+OLLAMA_CFG = CONFIG.get("ollama", {})
+OLLAMA_HOST = OLLAMA_CFG.get("host", "http://localhost:11434").rstrip("/")
+OLLAMA_TIMEOUT = int(OLLAMA_CFG.get("timeout", 300))
+
+
+def _parse_ollama_models(raw):
+    """Accept ['name', ...] or [{'name':..., 'think':...}, ...]."""
+    models = []
+    for item in raw or []:
+        if isinstance(item, str):
+            models.append({"name": item, "think": None})
+        elif isinstance(item, dict) and item.get("name"):
+            models.append({"name": item["name"], "think": item.get("think")})
+    return models
+
+
+OLLAMA_MODELS = _parse_ollama_models(OLLAMA_CFG.get("models"))
+if not OLLAMA_MODELS:
+    OLLAMA_MODELS = [{"name": OLLAMA_CFG.get("model", "gemma4:31b-cloud"), "think": None}]
+
+OPENROUTER_CFG = CONFIG.get("openrouter", {})
+API_KEY = OPENROUTER_CFG.get("api_key") or CONFIG.get("api_key", "")
+MODEL = OPENROUTER_CFG.get("model") or CONFIG.get("model", "nvidia/nemotron-3-ultra-550b-a55b:free")
+
+STT_CFG = CONFIG.get("stt", {})
+ACTIONS_CFG = CONFIG.get("actions", {})
+ACTIONS_ENABLED = bool(ACTIONS_CFG.get("enabled", True))
 
 
 # ─── Load notes for scoring ───────────────────────────────────────────────
@@ -119,6 +150,28 @@ def score_notes(question: str, top_n: int = 6) -> list:
     return [note_id for _, note_id in scored[:top_n]]
 
 
+# ─── Action protocol ─────────────────────────────────────────────────────
+# Appended to the brain's prompt so it knows how to ask for a machine action.
+ACTION_PROMPT = (
+    "\n\nYou can also drive this computer. When the user asks you to DO something "
+    "on the machine, reply with ONLY a JSON object and nothing else "
+    "(no code fences, no explanation, no other text):\n"
+    '{"say": "<one short witty line>", "action": {"type": "<type>", ...}}\n'
+    "Use exactly one of these action types:\n"
+    '- {"type": "system_status"}\n'
+    '- {"type": "list_dir", "path": "<folder>"}\n'
+    '- {"type": "read_file", "path": "<file>"}\n'
+    '- {"type": "search_files", "pattern": "*.pdf", "root": "<folder>"}\n'
+    '- {"type": "open_app", "app": "notepad"}\n'
+    '- {"type": "open_path", "path": "<file or folder>"}\n'
+    '- {"type": "open_url", "url": "https://..."}\n'
+    '- {"type": "run_command", "command": "git status"}\n'
+    "Prefer a supported app or command; if the user asks for something outside "
+    "this list, say so in plain text instead. For every other message reply "
+    "with plain text and no JSON at all."
+)
+
+
 # ─── LLM API call ───────────────────────────────────────────────────────────
 def call_llm(question: str, context_notes: list, history: list, is_boot: bool = False) -> str:
     """Call LLM API (Anthropic or OpenRouter) with context notes and history."""
@@ -153,16 +206,67 @@ def call_llm(question: str, context_notes: list, history: list, is_boot: bool = 
             "Handle small talk and jokes in character WITHOUT mentioning notes or citations. "
             "Only discuss the provided notes when the user actually asks about them."
         )
+        if ACTIONS_ENABLED:
+            system_prompt += ACTION_PROMPT
         # Build messages with history
         messages = [{"role": "system", "content": system_prompt}]
         for h in history[-6:]:  # Keep last 6 exchanges
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": f"Context notes:\n{context}\n\nQuestion: {question}"})
 
-    if PROVIDER == "openrouter":
+    if PROVIDER == "ollama":
+        return call_ollama(messages)
+    elif PROVIDER == "openrouter":
         return call_openrouter(messages)
     else:
         return call_anthropic(messages)
+
+
+def call_ollama(messages: list) -> str:
+    """Call a local Ollama model, falling back to other local models on failure."""
+    errors = []
+    for entry in OLLAMA_MODELS:
+        model = entry["name"]
+        try:
+            text = _call_ollama_model(model, messages, entry.get("think"))
+            if text:
+                return text
+            errors.append(f"{model}: empty response")
+        except Exception as e:
+            errors.append(f"{model}: {type(e).__name__} {e}")
+    return "[No local model answered. Tried " + "; ".join(errors) + "]"
+
+
+def _call_ollama_model(model: str, messages: list, think=None) -> str:
+    """Single Ollama chat call. Returns the assistant text, or '' if the model
+    produced nothing (reasoning models can return only a `thinking` field)."""
+    import urllib.request
+
+    payload = {
+        "model": model,
+        "stream": False,
+        "messages": messages,
+        "options": {"temperature": 0.7, "num_predict": 400},
+    }
+    # Reasoning models (qwen3) emit a separate `thinking` field and can leave
+    # `content` empty; turning thinking off keeps replies short and fast.
+    if think is not None:
+        payload["think"] = think
+
+    req = urllib.request.Request(
+        f"{OLLAMA_HOST}/api/chat",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
+        result = json.loads(resp.read().decode())
+
+    msg = result.get("message", {})
+    content = (msg.get("content") or "").strip()
+    if not content:
+        content = (msg.get("thinking") or "").strip()
+    return content
 
 
 def call_anthropic(messages: list) -> str:
@@ -228,14 +332,148 @@ def call_openrouter(messages: list) -> str:
             content = msg.get("content") or msg.get("reasoning") or ""
             return content.strip()
     except urllib.error.HTTPError as e:
-        err_body = e.read().decode()
+        err_body = ""
+        try:
+            err_body = e.read(600).decode("utf-8", "replace")
+        except Exception:
+            pass
+        if e.code == 429:
+            return ("[OpenRouter's free daily quota is used up"
+                    f"{_reset_hint(err_body)}. Top up credits, or switch the "
+                    "brain to Ollama in config.json.]")
         return f"[API Error {e.code}: {err_body}]"
     except Exception as e:
-        return f"[Error: {e}]"
+        return f"[Error: {type(e).__name__}: {e}]"
+
+
+def _reset_hint(err_body: str) -> str:
+    """Human-readable reset time from an OpenRouter 429 body, if present."""
+    try:
+        headers = json.loads(err_body).get("error", {}).get("metadata", {}).get("headers", {})
+        ms = headers.get("X-RateLimit-Reset")
+        if ms:
+            import datetime
+            when = datetime.datetime.fromtimestamp(int(ms) / 1000).astimezone()
+            return f" — resets at {when:%-I:%M %p} on {when:%Y-%m-%d}"
+    except Exception:
+        pass
+    return ""
+
+
+# ─── Deterministic action intent ─────────────────────────────────────────
+# The model writes fine prose but does not reliably emit action JSON, so the
+# intents that actually change the machine are detected from the wording
+# itself. The model is then only asked for the witty line.
+
+ACTION_LINE_PROMPT = (
+    "You are Jarvis, a dry, impeccably polite British butler with razor wit. "
+    "The user asked you to do something on their computer and you are about to. "
+    "Reply with ONE short witty sentence (at most 20 words) saying what you are "
+    "about to do. No JSON, no explanation, just the line."
+)
+
+
+def detect_action_intent(question: str):
+    """Guess the action from the wording alone. Returns an action dict or None."""
+    q = (question or "").lower().strip()
+    if not q:
+        return None
+
+    # "run whoami" / "execute git status"
+    if re.search(r"\b(run|execute)\b", q):
+        for cmd in actions.ALLOWED_COMMANDS:
+            if cmd in q:
+                return {"type": "run_command", "command": cmd}
+
+    # "open notepad" / "launch chrome" / "start the terminal"
+    if re.search(r"\b(open|launch|start)\b", q):
+        for alias in sorted(actions.APP_ALIASES, key=len, reverse=True):
+            if re.search(r"\b" + re.escape(alias) + r"\b", q):
+                return {"type": "open_app", "app": alias}
+
+    # "check system status" / "how much memory is free"
+    if (re.search(r"\b(system status|machine status|computer status|system vitals|"
+                  r"cpu load|cpu usage|ram usage|memory usage|memory free|"
+                  r"disk space|disk usage|uptime)\b", q)
+            or (re.search(r"\b(status|cpu|ram|memory|disk|uptime|vitals)\b", q)
+                and re.search(r"\b(check|show|tell|report|how much|what)\b", q))):
+        return {"type": "system_status"}
+
+    return None
+
+
+def call_llm_action_line(question: str, action: dict) -> str:
+    """One witty line announcing the action, with a plain fallback."""
+    fallback = f"Certainly, sir - {actions.describe(action)}."
+    try:
+        messages = [
+            {"role": "system", "content": ACTION_LINE_PROMPT},
+            {"role": "user", "content":
+                f"The user said: {question}\nYou will: {actions.describe(action)}"},
+        ]
+        if PROVIDER == "ollama":
+            line = call_ollama(messages)
+        elif PROVIDER == "openrouter":
+            line = call_openrouter(messages)
+        else:
+            line = call_anthropic(messages)
+        line = (line or "").strip()
+        # The provider helpers return bracketed strings on error - not a line.
+        if not line or (line.startswith("[") and line.endswith("]")):
+            return fallback
+        return line
+    except Exception:
+        return fallback
+
+
+def _strip_code_fence(text: str) -> str:
+    """Remove a markdown code-fence wrapper, e.g. ```json { ... } ```."""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s[3:]
+        if s[:4].lower() == "json":
+            s = s[4:]
+        s = s.strip()
+        if s.endswith("```"):
+            s = s[:-3].strip()
+    return s
+
+
+def _parse_action(text: str):
+    """If the brain replied with an action envelope, return it.
+
+    Expected shape: {"say": "...", "action": {"type": ..., ...}}
+    Returns None for ordinary prose replies.
+    """
+    if not text:
+        return None
+    stripped = _strip_code_fence(text)
+    if not stripped.startswith("{"):
+        return None
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        # Tolerate trailing chatter around the JSON.
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            obj = json.loads(stripped[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+    if isinstance(obj, dict) and isinstance(obj.get("action"), dict):
+        return {"say": str(obj.get("say") or "").strip(), "action": obj["action"]}
+    return None
 
 
 # ─── Request handler ──────────────────────────────────────────────────────
 class ViewerHandler(http.server.SimpleHTTPRequestHandler):
+    # HTTP/1.1 so responses can be keep-alive; every response must therefore
+    # carry a Content-Length (see send_json and the file handler).
+    protocol_version = "HTTP/1.1"
+    timeout = 60
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(VIEWER_DIR), **kwargs)
 
@@ -247,9 +485,26 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Cache-Control', 'public, max-age=3600')
         else:
             self.send_header('Cache-Control', 'no-cache')
-        # CORS for local dev
-        self.send_header('Access-Control-Allow-Origin', '*')
+        # No wildcard CORS: the app is same-origin only, and it can drive this
+        # machine, so no other site may talk to it.
         super().end_headers()
+
+    def _is_same_origin(self) -> bool:
+        """True only for requests that came from this app's own origin.
+
+        Browsers set Origin on cross-origin POSTs and Sec-Fetch-Site on every
+        fetch, so both are checked. This is what stops a random web page from
+        POSTing to localhost and making Jarvis open apps or run commands.
+        """
+        origin = self.headers.get('Origin')
+        if origin:
+            allowed = {f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"}
+            if origin.rstrip('/') not in allowed:
+                return False
+        site = self.headers.get('Sec-Fetch-Site')
+        if site and site not in ('same-origin', 'none'):
+            return False
+        return True
 
     def do_GET(self):
         # Block access to config.json and any file outside viewer/
@@ -259,12 +514,102 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        # Jarvis can act on this machine, so only same-origin POSTs are served.
+        if not self._is_same_origin():
+            self.send_json(HTTPStatus.FORBIDDEN, {
+                "error": "Cross-origin requests are not allowed."
+            })
+            return
         if self.path == '/chat':
             self.handle_chat()
         elif self.path == '/remember':
             self.handle_remember()
+        elif self.path == '/act':
+            self.handle_act()
+        elif self.path == '/transcribe':
+            self.handle_transcribe()
         else:
             self.send_error(404, "Not Found")
+
+    def handle_act(self):
+        """Run an allowlisted local action (see actions.py)."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length == 0:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Empty request"})
+            return
+
+        try:
+            body = json.loads(self.rfile.read(content_length).decode())
+        except json.JSONDecodeError:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
+            return
+
+        if not ACTIONS_ENABLED:
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": "Actions are disabled."})
+            return
+
+        clean, error = actions.validate(body.get("action") or {})
+        if error:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": error})
+            return
+
+        # Anything that changes the machine needs the user's explicit OK.
+        if actions.needs_confirmation(clean) and not body.get("confirm"):
+            self.send_json(HTTPStatus.OK, {
+                "status": "confirm_required",
+                "action": clean,
+                "description": actions.describe(clean),
+                "message": f"May I {actions.describe(clean)}?",
+            })
+            return
+
+        try:
+            result = actions.execute(clean)
+        except actions.ActionError as e:
+            self.send_json(HTTPStatus.OK, {
+                "status": "error", "error": str(e), "action": clean,
+            })
+            return
+        except Exception as e:
+            self.send_json(HTTPStatus.OK, {
+                "status": "error", "error": f"{type(e).__name__}: {e}", "action": clean,
+            })
+            return
+
+        self.send_json(HTTPStatus.OK, {
+            "status": "ok",
+            "action": clean,
+            "result": result,
+            "message": result.get("message") or "Done, sir.",
+        })
+
+    def handle_transcribe(self):
+        """Transcribe recorded audio locally with Whisper."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length == 0:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "No audio received"})
+            return
+        if content_length > 25 * 1024 * 1024:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Audio too large (max 25 MB)"})
+            return
+
+        audio = self.rfile.read(content_length)
+        suffix = self.headers.get('X-Audio-Suffix', '.webm')
+        if not suffix.startswith('.'):
+            suffix = '.webm'
+
+        try:
+            text = stt.transcribe(audio, suffix)
+        except stt.STTUnavailable as e:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(e)})
+            return
+        except Exception as e:
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "error": f"{type(e).__name__}: {e}"
+            })
+            return
+
+        self.send_json(HTTPStatus.OK, {"text": text})
 
     def handle_chat(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -303,7 +648,15 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         # Determine if this is a note question or small talk
         is_note_question = len(top_ids) > 0 and not self._is_small_talk(question)
 
-        if is_note_question:
+        # An action request is detected from the wording, not from the model.
+        detected = detect_action_intent(question) if ACTIONS_ENABLED else None
+
+        if detected is not None:
+            # No note context needed - the model only supplies the line.
+            answer = call_llm_action_line(question, detected)
+            is_note_question = False
+            top_ids = []
+        elif is_note_question:
             # Call LLM with context
             answer = call_llm(question, context_notes, session["history"], is_boot=False)
         else:
@@ -314,12 +667,47 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         session["history"].append({"role": "user", "content": question})
         session["history"].append({"role": "assistant", "content": answer})
 
+        # The brain may have asked for a machine action instead of prose.
+        action_info = None
+        if ACTIONS_ENABLED:
+            if detected is not None:
+                # Deterministic intent - the action is known, so no parsing.
+                clean, error = actions.validate(detected)
+                if error:
+                    answer = f"[I would have done that, but it was refused: {error}]"
+                else:
+                    action_info = {
+                        "action": clean,
+                        "description": actions.describe(clean),
+                        "status": ("confirm_required" if actions.needs_confirmation(clean)
+                                   else "ready"),
+                    }
+            else:
+                envelope = _parse_action(answer)
+                if envelope:
+                    clean, error = actions.validate(envelope["action"])
+                    if error:
+                        answer = f"[I would have done that, but it was refused: {error}]"
+                    else:
+                        action_info = {
+                            "action": clean,
+                            "description": actions.describe(clean),
+                            "status": ("confirm_required" if actions.needs_confirmation(clean)
+                                       else "ready"),
+                        }
+                        answer = envelope["say"] or f"Certainly, sir - {action_info['description']}."
+                        # An action request is not a note question, even when the
+                        # wording happens to overlap with note content.
+                        is_note_question = False
+                        top_ids = []
+
         # Respond
         self.send_json(HTTPStatus.OK, {
             "answer": answer,
             "nodes": top_ids if is_note_question else [],
             "session_id": session_id,
             "is_note_question": is_note_question,
+            "action": action_info,
         })
 
     def _is_small_talk(self, question: str) -> bool:
@@ -442,10 +830,12 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         })
 
     def send_json(self, status: int, data: dict):
+        body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        self.wfile.write(body)
 
 
 def main():
@@ -464,10 +854,21 @@ def main():
     print(f"Knowledge Galaxy server running at http://localhost:{PORT}")
     print(f"Serving: {VIEWER_DIR}")
     print(f"Config: {CONFIG_FILE}")
-    print(f"Model: {MODEL}")
+    if PROVIDER == "ollama":
+        chain = " -> ".join(f"{m['name']}" for m in OLLAMA_MODELS)
+        print(f"Brain: Ollama at {OLLAMA_HOST}")
+        print(f"  model chain: {chain}")
+    else:
+        print(f"Brain: {PROVIDER} model {MODEL}")
+    print(f"Actions: {'enabled' if ACTIONS_ENABLED else 'disabled'}")
     print("Press Ctrl+C to stop")
 
-    with socketserver.TCPServer(("", PORT), ViewerHandler) as httpd:
+    # ThreadingHTTPServer, not plain TCPServer: a single slow LLM call must not
+    # block every other request (a hung chat used to freeze static files too).
+    # Bind to loopback only: Jarvis can drive this machine, so it must not be
+    # reachable from the network.
+    with http.server.ThreadingHTTPServer(("127.0.0.1", PORT), ViewerHandler) as httpd:
+        httpd.daemon_threads = True
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
