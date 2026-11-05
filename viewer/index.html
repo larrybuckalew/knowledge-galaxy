@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Knowledge Galaxy — Stellar Coffee Roasters</title>
+  <style>
+    :root {
+      --bg: #050608;
+      --fg: #e8e6e1;
+      --muted: #6b6b7a;
+      --accent: #d4a843;
+      --panel-bg: rgba(11, 13, 18, 0.92);
+      --panel-border: rgba(212, 168, 67, 0.3);
+      --glow-1: #d4a843;
+      --glow-2: #6b4e8c;
+      --glow-3: #3a7bc8;
+      --glow-4: #2a9d8f;
+      --glow-5: #e76f51;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f3ee;
+        --fg: #1a1a2e;
+        --muted: #6b6b7a;
+        --panel-bg: rgba(255, 252, 248, 0.95);
+        --panel-border: rgba(11, 13, 18, 0.2);
+      }
+    }
+
+    body {
+      font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #graph-container {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      z-index: 1;
+    }
+
+    canvas { display: block; }
+
+    /* Starfield background */
+    #starfield {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* Side panel */
+    #panel {
+      position: fixed;
+      top: 0; right: 0; bottom: 0;
+      width: 380px;
+      max-width: 90vw;
+      background: var(--panel-bg);
+      border-left: 1px solid var(--panel-border);
+      backdrop-filter: blur(20px);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: -20px 0 60px -20px rgba(0,0,0,0.5);
+    }
+
+    #panel.open { transform: translateX(0); }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--panel-border);
+    }
+
+    .panel-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--fg);
+    }
+
+    .panel-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 4px;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+    .panel-close:hover { color: var(--accent); }
+
+    .panel-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    .panel-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted);
+      font-size: 0.95rem;
+      text-align: center;
+      padding: 40px 20px;
+    }
+
+    .note-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .note-tag {
+      font-size: 0.7rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(212, 168, 67, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(212, 168, 67, 0.3);
+    }
+
+    .note-group {
+      background: rgba(107, 78, 140, 0.15);
+      color: var(--glow-2);
+      border-color: rgba(107, 78, 140, 0.3);
+    }
+
+    .note-excerpt {
+      line-height: 1.7;
+      color: var(--fg);
+      opacity: 0.9;
+      font-size: 0.95rem;
+      white-space: pre-wrap;
+    }
+
+    .note-links {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--panel-border);
+    }
+
+    .note-links-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .link-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .link-item {
+      font-size: 0.8rem;
+      color: var(--accent);
+      text-decoration: none;
+      padding: 4px 10px;
+      background: rgba(212, 168, 67, 0.1);
+      border: 1px solid rgba(212, 168, 67, 0.2);
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .link-item:hover {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+    }
+
+    /* Header overlay */
+    #header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      padding: 20px 24px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+
+    #header > * { pointer-events: auto; }
+
+    .logo {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--fg);
+      letter-spacing: -0.02em;
+    }
+    .logo span { color: var(--accent); }
+
+    .stats {
+      display: flex;
+      gap: 24px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .stat { display: flex; align-items: center; gap: 6px; }
+    .stat-value { color: var(--fg); font-weight: 500; }
+
+    /* Legend */
+    #legend {
+      position: fixed;
+      bottom: 24px;
+      left: 24px;
+      z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      pointer-events: none;
+    }
+    #legend > * { pointer-events: auto; }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      background: var(--panel-bg);
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(20px);
+      white-space: nowrap;
+    }
+
+    .legend-color {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    /* Loading */
+    #loading {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: var(--bg);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      transition: opacity 0.4s, visibility 0.4s;
+    }
+    #loading.hidden { opacity: 0; visibility: hidden; }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 3px solid transparent;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1rem;
+      color: var(--muted);
+    }
+
+    /* Instructions */
+    #hint {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 20;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      backdrop-filter: blur(20px);
+      pointer-events: none;
+      opacity: 0.8;
+      animation: fadeIn 0.6s ease 1s both;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 0.8; transform: none; } }
+
+    .hint-keys {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .hint-key {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,0.05);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      #panel { transition: none; }
+      .spinner { animation: none; }
+      #hint { animation: none; opacity: 0.8; }
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 768px) {
+      #panel { width: 100vw; }
+      #header { padding: 12px 16px; }
+      .logo { font-size: 1.1rem; }
+      .stats { display: none; }
+      #legend { bottom: 12px; left: 12px; right: 12px; justify-content: center; }
+      #hint { display: none; }
+      #chat-bar { bottom: 12px; left: 12px; right: 12px; max-width: none; }
+      .chat-input-wrapper { flex-direction: column; gap: 8px; }
+      .chat-input { min-width: 0; }
+    }
+
+    /* Chat bar */
+    #chat-bar {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      max-width: 720px;
+      width: calc(100% - 48px);
+      pointer-events: none;
+    }
+    #chat-bar > * { pointer-events: auto; }
+
+    .chat-input-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      padding: 10px 16px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 8px 40px -10px rgba(0,0,0,0.5);
+      transition: box-shadow 0.2s, border-color 0.2s;
+    }
+    .chat-input-wrapper:focus-within {
+      box-shadow: 0 8px 40px -10px rgba(0,0,0,0.5), 0 0 0 2px var(--accent);
+      border-color: var(--accent);
+    }
+
+    .chat-input {
+      flex: 1;
+      min-width: 0;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--fg);
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+    .chat-input::placeholder { color: var(--muted); opacity: 0.7; }
+
+    .chat-send {
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+      white-space: nowrap;
+    }
+    .chat-send:hover { opacity: 0.9; }
+    .chat-send:active { transform: scale(0.98); }
+    .chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .chat-answer {
+      margin-top: 10px;
+      padding: 14px 18px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      backdrop-filter: blur(20px);
+      font-size: 0.9rem;
+      line-height: 1.6;
+      color: var(--fg);
+      animation: slideUp 0.3s ease;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: none; }
+    }
+    .chat-answer.empty { display: none; }
+
+    .chat-answer-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+    }
+    .chat-answer-sources {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 8px;
+      font-size: 0.65rem;
+    }
+    .chat-source-tag {
+      background: rgba(212, 168, 67, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(212, 168, 67, 0.3);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+
+    .chat-loading {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .chat-spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid transparent;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* Voice */
+    .chat-voice-btn {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s, transform 0.1s;
+      color: var(--fg);
+    }
+    .chat-voice-btn:hover { background: rgba(255,255,255,0.08); }
+    .chat-voice-btn:active { transform: scale(0.95); }
+    .chat-voice-btn.listening {
+      background: rgba(231, 111, 81, 0.2);
+      color: #e76f51;
+      animation: pulse 1s infinite;
+    }
+    .chat-voice-btn.listening svg { animation: wave 0.5s infinite; }
+    @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(231, 111, 81, 0.5); } 50% { box-shadow: 0 0 0 8px rgba(231, 111, 81, 0); } }
+    @keyframes wave { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.3); } }
+
+    .chat-status {
+      margin-top: 8px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      min-height: 1.2em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .chat-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .chat-status-dot.listening { background: #e76f51; animation: blink 1s infinite; }
+    .chat-status-dot.thinking { background: var(--accent); animation: blink 1.5s infinite; }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="starfield"></div>
+  <div id="graph-container"></div>
+
+  <div id="loading" role="status" aria-live="polite">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading knowledge galaxy…</div>
+  </div>
+
+  <header id="header">
+    <div class="logo">Stellar <span>Knowledge Galaxy</span></div>
+    <div class="stats" id="stats">
+      <div class="stat"><span class="stat-value" id="stat-nodes">0</span> notes</div>
+      <div class="stat"><span class="stat-value" id="stat-links">0</span> connections</div>
+    </div>
+  </header>
+
+  <nav id="legend" aria-label="Group legend"></nav>
+
+  <aside id="panel" aria-label="Note details">
+    <div class="panel-header">
+      <h2 class="panel-title" id="panel-title">Select a star</h2>
+      <button class="panel-close" id="panel-close" aria-label="Close panel">✕</button>
+    </div>
+    <div class="panel-content" id="panel-content">
+      <div class="panel-empty">Click a node to explore its connections</div>
+    </div>
+  </aside>
+
+  <div id="hint">
+    <div class="hint-keys">
+      <span class="hint-key">Click</span> node → focus
+      <span class="hint-key">Drag</span> → rotate
+      <span class="hint-key">Scroll</span> → zoom
+      <span class="hint-key">Space</span> → pause drift
+    </div>
+  </div>
+
+  <!-- Chat bar -->
+  <div id="chat-bar">
+    <div class="chat-input-wrapper">
+      <input type="text" class="chat-input" id="chat-input" placeholder="Ask the galaxy… (e.g., \"What is our roast profile for Ethiopia?\")" autocomplete="off">
+      <button class="chat-voice-btn" id="chat-voice" aria-label="Voice input" title="Click to speak">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-6 0z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
+      </button>
+      <button class="chat-send" id="chat-send" aria-label="Send">Ask</button>
+    </div>
+    <div class="chat-status" id="chat-status" aria-live="polite"></div>
+    <div class="chat-answer empty" id="chat-answer" aria-live="polite"></div>
+  </div>
+
+  <script type="module">
+    import ForceGraph3D from 'https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.0/dist/3d-force-graph.module.js';
+
+    // ─── Config ──────────────────────────────────────────────────────────
+    const CONFIG = {
+      nodeCount: 0,
+      linkCount: 0,
+      groups: new Map(),
+      groupColors: [
+        '#d4a843', // Stellar Gold
+        '#6b4e8c', // Nebula Purple
+        '#3a7bc8', // Comet Blue
+        '#2a9d8f', // Teal
+        '#e76f51', // Terracotta
+        '#8abd56', // Sage
+        '#f4a261', // Peach
+        '#9b5de5', // Violet
+      ],
+      idleSpeed: 0.0003,
+      cameraDistance: 280,
+    };
+
+    // ─── DOM ─────────────────────────────────────────────────────────────
+    const container = document.getElementById('graph-container');
+    const loadingEl = document.getElementById('loading');
+    const panel = document.getElementById('panel');
+    const panelTitle = document.getElementById('panel-title');
+    const panelContent = document.getElementById('panel-content');
+    const panelClose = document.getElementById('panel-close');
+    const legendEl = document.getElementById('legend');
+    const statNodes = document.getElementById('stat-nodes');
+    const statLinks = document.getElementById('stat-links');
+
+    // ─── State ───────────────────────────────────────────────────────────
+    let graph = null;
+    let graphData = null;
+    let highlightedNode = null;
+    let isPaused = false;
+    let animationId = null;
+    let starfieldCtx = null;
+    let stars = [];
+
+    // ─── Starfield ───────────────────────────────────────────────────────
+    function initStarfield() {
+      const canvas = document.createElement('canvas');
+      canvas.id = 'starfield-canvas';
+      document.getElementById('starfield').appendChild(canvas);
+      starfieldCtx = canvas.getContext('2d');
+      resizeStarfield();
+      window.addEventListener('resize', resizeStarfield);
+      createStars();
+      animateStarfield();
+    }
+
+    function resizeStarfield() {
+      const canvas = starfieldCtx.canvas;
+      canvas.width = window.innerWidth * devicePixelRatio;
+      canvas.height = window.innerHeight * devicePixelRatio;
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      starfieldCtx.scale(devicePixelRatio, devicePixelRatio);
+    }
+
+    function createStars() {
+      stars = [];
+      const count = Math.min(300, Math.floor(window.innerWidth * window.innerHeight / 3000));
+      for (let i = 0; i < count; i++) {
+        stars.push({
+          x: Math.random() * window.innerWidth,
+          y: Math.random() * window.innerHeight,
+          r: Math.random() * 1.5 + 0.3,
+          opacity: Math.random() * 0.6 + 0.2,
+          speed: Math.random() * 0.15 + 0.02,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+    }
+
+    function animateStarfield() {
+      if (!starfieldCtx) return;
+      const ctx = starfieldCtx;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+
+      ctx.clearRect(0, 0, w, h);
+
+      for (const star of stars) {
+        star.phase += star.speed * 0.01;
+        const twinkle = Math.sin(star.phase) * 0.3 + 0.7;
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(232, 230, 225, ${star.opacity * twinkle})`;
+        ctx.fill();
+      }
+      requestAnimationFrame(animateStarfield);
+    }
+
+    // ─── Group color assignment ──────────────────────────────────────────
+    function getGroupColor(group) {
+      if (!CONFIG.groups.has(group)) {
+        const idx = CONFIG.groups.size % CONFIG.groupColors.length;
+        CONFIG.groups.set(group, CONFIG.groupColors[idx]);
+      }
+      return CONFIG.groups.get(group);
+    }
+
+    function buildLegend() {
+      legendEl.innerHTML = '';
+      const sortedGroups = Array.from(CONFIG.groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [group, color] of sortedGroups) {
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.innerHTML = `<span class="legend-color" style="background:${color}; box-shadow:0 0 8px ${color}"></span>${escapeHtml(group)}`;
+        legendEl.appendChild(item);
+      }
+    }
+
+    // ─── Graph initialization ────────────────────────────────────────────
+    async function initGraph() {
+      try {
+        const res = await fetch('graph-data.js');
+        const text = await res.text();
+        eval(text); // defines const GRAPH
+        graphData = GRAPH;
+        CONFIG.nodeCount = graphData.nodes.length;
+        CONFIG.linkCount = graphData.links.length;
+
+        statNodes.textContent = CONFIG.nodeCount;
+        statLinks.textContent = CONFIG.linkCount;
+
+        // Assign group colors
+        for (const node of graphData.nodes) {
+          getGroupColor(node.group);
+        }
+        buildLegend();
+
+        // Create graph
+        graph = ForceGraph3D()(container)
+          .graphData(graphData)
+          .nodeId('id')
+          .nodeLabel('label')
+          .nodeVal(5)
+          .nodeColor(node => getGroupColor(node.group))
+          .nodeThreeObject(node => createNodeObject(node))
+          .nodeThreeObjectExtend(true)
+          .linkColor(() => 'rgba(212,168,67,0.15)')
+          .linkOpacity(0.4)
+          .linkWidth(0.5)
+          .linkDirectionalArrowLength(0)
+          .linkDirectionalArrowColor(() => 'rgba(212,168,67,0.3)')
+          .linkDirectionalArrowRelPos(1)
+          .backgroundColor('#050608')
+          .showNavInfo(false)
+          .onNodeClick(onNodeClick)
+          .onNodeHover(onNodeHover)
+          .onBackgroundClick(() => closePanel())
+          .enableNodeDrag(false)
+          .enablePointerInteraction(true)
+          .cooldownTicks(300)
+          .warmupTicks(100);
+
+        // Camera setup
+        graph.cameraPosition({ x: 0, y: 0, z: CONFIG.cameraDistance }, { x: 0, y: 0, z: 0 }, 0);
+        graph.controls().enableDamping = true;
+        graph.controls().dampingFactor = 0.05;
+        graph.controls().rotateSpeed = 0.3;
+        graph.controls().zoomSpeed = 0.8;
+        graph.controls().panSpeed = 0.5;
+        graph.controls().minDistance = 50;
+        graph.controls().maxDistance = 800;
+
+        // Start idle rotation
+        startIdleRotation();
+
+        loadingEl.classList.add('hidden');
+        setTimeout(() => loadingEl.remove(), 500);
+
+      } catch (err) {
+        console.error('Failed to load graph:', err);
+        loadingEl.querySelector('.loading-text').textContent = 'Failed to load graph data';
+      }
+    }
+
+    // ─── Custom node objects (glowing spheres with labels) ────────────────
+    function createNodeObject(node) {
+      const group = document.createElement('div');
+      group.style.position = 'absolute';
+      group.style.pointerEvents = 'none';
+
+      // Glow sprite
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      const color = getGroupColor(node.group);
+      const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gradient.addColorStop(0, color);
+      gradient.addColorStop(0.4, color + '80');
+      gradient.addColorStop(1, 'transparent');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 64, 64);
+
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.9,
+      }));
+      sprite.scale.set(12, 12, 1);
+      sprite.renderOrder = 10;
+      group.appendChild(sprite);
+
+      // Core sphere (Three.js mesh)
+      const geometry = new THREE.SphereGeometry(3.5, 16, 16);
+      const material = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color),
+        transparent: true,
+        opacity: 1,
+        depthWrite: true,
+      });
+      const sphere = new THREE.Mesh(geometry, material);
+      sphere.renderOrder = 5;
+      group.appendChild(sphere);
+
+      // Halo ring
+      const ringGeo = new THREE.RingGeometry(5, 7, 32);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color),
+        transparent: true,
+        opacity: 0.3,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.renderOrder = 8;
+      group.appendChild(ring);
+
+      // Store references for animation
+      node._threeObj = group;
+      node._sphere = sphere;
+      node._ring = ring;
+      node._baseScale = 1;
+
+      return group;
+    }
+
+    // ─── Idle rotation ───────────────────────────────────────────────────
+    function startIdleRotation() {
+      function rotate() {
+        if (!graph || isPaused) {
+          animationId = requestAnimationFrame(rotate);
+          return;
+        }
+        const controls = graph.controls();
+        if (!controls.autoRotate) {
+          controls.autoRotate = true;
+          controls.autoRotateSpeed = CONFIG.idleSpeed;
+        }
+        // Animate node pulses
+        animateNodes();
+        animationId = requestAnimationFrame(rotate);
+      }
+      animationId = requestAnimationFrame(rotate);
+    }
+
+    function animateNodes() {
+      if (!graphData) return;
+      const time = Date.now() * 0.001;
+      for (const node of graphData.nodes) {
+        if (node._sphere && node !== highlightedNode) {
+          const pulse = 1 + Math.sin(time * 1.5 + node.id * 0.5) * 0.08;
+          node._sphere.scale.setScalar(pulse);
+          if (node._ring) {
+            node._ring.rotation.z += 0.002;
+            node._ring.material.opacity = 0.2 + Math.sin(time * 2 + node.id) * 0.1;
+          }
+        }
+      }
+    }
+
+    // ─── Node interactions ───────────────────────────────────────────────
+    function onNodeClick(node) {
+      if (!node) return;
+      highlightNode(node);
+      flyToNode(node);
+      openPanel(node);
+    }
+
+    function onNodeHover(node, prev) {
+      if (prev && prev._sphere && prev !== highlightedNode) {
+        prev._sphere.material.opacity = 1;
+        prev._sphere.scale.setScalar(prev._baseScale || 1);
+        if (prev._ring) prev._ring.material.opacity = 0.3;
+      }
+      if (node && node._sphere && node !== highlightedNode) {
+        node._sphere.material.opacity = 1;
+        node._sphere.scale.setScalar(1.3);
+        if (node._ring) node._ring.material.opacity = 0.6;
+      }
+    }
+
+    function highlightNode(node) {
+      // Reset previous
+      if (highlightedNode && highlightedNode !== node) {
+        resetNodeHighlight(highlightedNode);
+      }
+
+      highlightedNode = node;
+
+      // Highlight target
+      if (node._sphere) {
+        node._sphere.material.color.setHex(0xffffff);
+        node._sphere.material.opacity = 1;
+        node._sphere.scale.setScalar(2);
+      }
+      if (node._ring) {
+        node._ring.material.color.setHex(0xffffff);
+        node._ring.material.opacity = 0.8;
+        node._ring.scale.setScalar(1.5);
+      }
+
+      // Highlight neighbors
+      const neighborIds = new Set();
+      for (const link of graphData.links) {
+        if (link.source === node.id || link.source?.id === node.id) {
+          neighborIds.add(typeof link.target === 'object' ? link.target.id : link.target);
+        }
+        if (link.target === node.id || link.target?.id === node.id) {
+          neighborIds.add(typeof link.source === 'object' ? link.source.id : link.source);
+        }
+      }
+
+      for (const n of graphData.nodes) {
+        if (neighborIds.has(n.id)) {
+          if (n._sphere) {
+            n._sphere.material.opacity = 1;
+            n._sphere.scale.setScalar(1.4);
+            n._sphere.material.emissive = new THREE.Color(getGroupColor(n.group));
+            n._sphere.material.emissiveIntensity = 0.3;
+          }
+          if (n._ring) {
+            n._ring.material.opacity = 0.5;
+          }
+        } else if (n !== node) {
+          // Dim non-neighbors
+          if (n._sphere) {
+            n._sphere.material.opacity = 0.25;
+            n._sphere.material.emissiveIntensity = 0;
+          }
+          if (n._ring) n._ring.material.opacity = 0.05;
+        }
+      }
+
+      // Highlight links
+      graph.linkOpacity(link => {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        return (src === node.id || tgt === node.id) ? 0.8 : 0.05;
+      });
+      graph.linkWidth(link => {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        return (src === node.id || tgt === node.id) ? 2 : 0.3;
+      });
+      graph.linkColor(link => {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        return (src === node.id || tgt === node.id) ? '#d4a843' : 'rgba(212,168,67,0.08)';
+      });
+    }
+
+    function resetNodeHighlight(node) {
+      if (!node._sphere) return;
+      const color = getGroupColor(node.group);
+      node._sphere.material.color.setHex(new THREE.Color(color).getHex());
+      node._sphere.material.opacity = 1;
+      node._sphere.material.emissiveIntensity = 0;
+      node._sphere.scale.setScalar(node._baseScale || 1);
+      if (node._ring) {
+        node._ring.material.color.setHex(new THREE.Color(color).getHex());
+        node._ring.material.opacity = 0.3;
+        node._ring.scale.setScalar(1);
+      }
+    }
+
+    function clearHighlights() {
+      highlightedNode = null;
+      for (const node of graphData.nodes) {
+        resetNodeHighlight(node);
+      }
+      graph.linkOpacity(0.4);
+      graph.linkWidth(0.5);
+      graph.linkColor(() => 'rgba(212,168,67,0.15)');
+    }
+
+    function flyToNode(node) {
+      const pos = node._threeObj.getWorldPosition(new THREE.Vector3());
+      const distance = 120;
+      const target = { x: pos.x, y: pos.y, z: pos.z };
+      const cameraPos = {
+        x: pos.x,
+        y: pos.y + 30,
+        z: pos.z + distance,
+      };
+      graph.cameraPosition(cameraPos, target, 1500);
+    }
+
+    // ─── Panel ───────────────────────────────────────────────────────────
+    function openPanel(node) {
+      panelTitle.textContent = escapeHtml(node.label);
+      panel.classList.add('open');
+
+      const groupColor = getGroupColor(node.group);
+
+      // Find neighbors
+      const neighborIds = new Set();
+      for (const link of graphData.links) {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        if (src === node.id) neighborIds.add(tgt);
+        if (tgt === node.id) neighborIds.add(src);
+      }
+      const neighbors = graphData.nodes.filter(n => neighborIds.has(n.id));
+
+      panelContent.innerHTML = `
+        <div class="note-meta">
+          <span class="note-tag">${escapeHtml(node.group)}</span>
+        </div>
+        <div class="note-excerpt">${escapeHtml(node.excerpt)}</div>
+        ${neighbors.length ? `
+        <div class="note-links">
+          <div class="note-links-title">Connected notes (${neighbors.length})</div>
+          <div class="link-list">
+            ${neighbors.map(n => `<a class="link-item" href="#" data-id="${n.id}">${escapeHtml(n.label)}</a>`).join('')}
+          </div>
+        </div>
+        ` : ''}
+      `;
+
+      // Add click handlers for neighbor links
+      panelContent.querySelectorAll('.link-item').forEach(el => {
+        el.addEventListener('click', e => {
+          e.preventDefault();
+          const targetId = parseInt(el.dataset.id, 10);
+          const targetNode = graphData.nodes.find(n => n.id === targetId);
+          if (targetNode) {
+            highlightNode(targetNode);
+            flyToNode(targetNode);
+            openPanel(targetNode);
+          }
+        });
+      });
+    }
+
+    function closePanel() {
+      panel.classList.remove('open');
+      clearHighlights();
+    }
+
+    panelClose.addEventListener('click', closePanel);
+
+    // ─── Keyboard shortcuts ──────────────────────────────────────────────
+    document.addEventListener('keydown', e => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        isPaused = !isPaused;
+      }
+      if (e.code === 'Escape') {
+        closePanel();
+      }
+    });
+
+    // ─── Utilities ───────────────────────────────────────────────────────
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&')
+        .replace(/</g, '<')
+        .replace(/>/g, '>')
+        .replace(/"/g, '"')
+        .replace(/'/g, ''');
+    }
+
+    // ─── Chat brain ───────────────────────────────────────────────────────────
+    let chatSessionId = null;
+    const chatInput = document.getElementById('chat-input');
+    const chatSend = document.getElementById('chat-send');
+    const chatAnswer = document.getElementById('chat-answer');
+
+    async function sendChat(question) {
+      // Check for "remember that..." pattern
+      const rememberMatch = question.match(/^remember that\s+(.+)$/i);
+      if (rememberMatch) {
+        return sendRemember(rememberMatch[1].trim());
+      }
+
+      chatSend.disabled = true;
+      chatInput.disabled = true;
+      chatAnswer.classList.remove('empty');
+      chatAnswer.innerHTML = '<div class="chat-loading"><div class="chat-spinner"></div>Thinking…</div>';
+
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, session_id: chatSessionId }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+
+        chatSessionId = data.session_id;
+        renderAnswer(data);
+      } catch (err) {
+        chatAnswer.innerHTML = `<div style="color:#e76f51">Error: ${escapeHtml(err.message)}</div>`;
+      } finally {
+        chatSend.disabled = false;
+        chatInput.disabled = false;
+        chatInput.focus();
+      }
+    }
+
+    async function sendRemember(statement) {
+      chatSend.disabled = true;
+      chatInput.disabled = true;
+      chatAnswer.classList.remove('empty');
+      chatAnswer.innerHTML = '<div class="chat-loading"><div class="chat-spinner"></div>Committing to memory…</div>';
+
+      try {
+        const res = await fetch('/remember', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ statement }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+
+        // Add node to graph live
+        addLiveNode(data);
+        // Speak confirmation
+        speak(data.answer);
+        // Show in chat
+        chatAnswer.innerHTML = `<div>${escapeHtml(data.answer)}</div>`;
+      } catch (err) {
+        chatAnswer.innerHTML = `<div style="color:#e76f51">Error: ${escapeHtml(err.message)}</div>`;
+      } finally {
+        chatSend.disabled = false;
+        chatInput.disabled = false;
+        chatInput.focus();
+      }
+    }
+
+    function renderAnswer(data) {
+      const { answer, nodes, is_note_question } = data;
+      let html = '';
+      if (is_note_question && nodes.length > 0) {
+        html += `<div class="chat-answer-header">Answer <span style="color:var(--muted);">from ${nodes.length} note${nodes.length !== 1 ? 's' : ''}</span></div>`;
+        html += `<div>${escapeHtml(answer)}</div>`;
+        html += '<div class="chat-answer-sources">';
+        for (const nid of nodes) {
+          const node = graphData?.nodes?.find(n => n.id === nid);
+          if (node) {
+            html += `<span class="chat-source-tag">${escapeHtml(node.label)}</span>`;
+          }
+        }
+        html += '</div>';
+      } else {
+        // Small talk / jokes - no sources header
+        html += `<div>${escapeHtml(answer)}</div>`;
+      }
+      chatAnswer.innerHTML = html;
+
+      // Visual proof: only for actual note questions with sources
+      if (graph && graphData && is_note_question && nodes.length > 0) {
+        proveAnswer(nodes);
+      }
+    }
+
+    function proveAnswer(nodeIds) {
+      // Cluster mode: 4+ notes = light up all + neighbors, no fly-to
+      // Single/few mode: fly to top node, highlight it + neighbors, open panel
+      const isCluster = nodeIds.length >= 4;
+      const topNodeId = nodeIds[0];
+      const topNode = graphData.nodes.find(n => n.id === topNodeId);
+
+      // Build full highlight set: source nodes + their direct neighbors
+      const highlightSet = new Set(nodeIds);
+      for (const link of graphData.links) {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        if (highlightSet.has(src)) highlightSet.add(tgt);
+        if (highlightSet.has(tgt)) highlightSet.add(src);
+      }
+
+      // Reset and apply highlights
+      clearHighlights();
+      for (const node of graphData.nodes) {
+        if (highlightSet.has(node.id) && node._sphere) {
+          const isSource = nodeIds.includes(node.id);
+          node._sphere.material.color.setHex(isSource ? 0xffffff : 0xffdd88);
+          node._sphere.material.opacity = 1;
+          node._sphere.scale.setScalar(isSource ? 2 : 1.5);
+          node._sphere.material.emissive = new THREE.Color(isSource ? 0xd4a843 : 0xffaa00);
+          node._sphere.material.emissiveIntensity = isSource ? 0.5 : 0.3;
+          if (node._ring) {
+            node._ring.material.color.setHex(isSource ? 0xffffff : 0xffdd88);
+            node._ring.material.opacity = isSource ? 0.8 : 0.5;
+            node._ring.scale.setScalar(isSource ? 1.5 : 1.2);
+          }
+        } else if (node._sphere) {
+          node._sphere.material.opacity = 0.2;
+          node._sphere.material.emissiveIntensity = 0;
+          if (node._ring) node._ring.material.opacity = 0.03;
+        }
+      }
+
+      // Links: bright for connections within highlight set
+      graph.linkOpacity(link => {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        return (highlightSet.has(src) && highlightSet.has(tgt)) ? 0.8 : 0.05;
+      });
+      graph.linkWidth(link => {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        return (highlightSet.has(src) && highlightSet.has(tgt)) ? 2 : 0.2;
+      });
+      graph.linkColor(() => 'rgba(212,168,67,0.6)');
+
+      if (!isCluster && topNode) {
+        // Fly to top node and open its panel
+        flyToNode(topNode);
+        // Small delay so camera arrives before panel opens
+        setTimeout(() => openPanel(topNode), 800);
+      } else {
+        // Cluster: just center on the group centroid
+        centerOnCluster(highlightSet);
+      }
+    }
+
+    function centerOnCluster(nodeIdSet) {
+      if (!graph || !graphData) return;
+      let cx = 0, cy = 0, cz = 0, count = 0;
+      for (const node of graphData.nodes) {
+        if (nodeIdSet.has(node.id) && node._threeObj) {
+          const pos = node._threeObj.getWorldPosition(new THREE.Vector3());
+          cx += pos.x; cy += pos.y; cz += pos.z;
+          count++;
+        }
+      }
+      if (count === 0) return;
+      cx /= count; cy /= count; cz /= count;
+      graph.cameraPosition({ x: cx, y: cy + 40, z: cz + 200 }, { x: cx, y: cy, z: cz }, 1500);
+    }
+
+    // ─── Live node addition ─────────────────────────────────────────────────
+    function addLiveNode(data) {
+      const { id, title, excerpt, group, spawn_node_id } = data;
+      if (!graph || !graphData) return;
+
+      // Create new node object
+      const newNode = {
+        id,
+        label: title,
+        group,
+        excerpt,
+        _baseScale: 1,
+      };
+
+      // Get spawn position from related node
+      const spawnNode = graphData.nodes.find(n => n.id === spawn_node_id);
+      let spawnPos = { x: 0, y: 0, z: 0 };
+      if (spawnNode && spawnNode._threeObj) {
+        spawnPos = spawnNode._threeObj.getWorldPosition(new THREE.Vector3());
+      }
+
+      // Add to graphData
+      graphData.nodes.push(newNode);
+
+      // Create Three.js object at spawn position
+      const nodeObj = createNodeObject(newNode);
+      nodeObj.position.copy(spawnPos);
+
+      // Add to graph scene
+      const scene = graph.graphContainer(); // Get the Three.js scene
+      scene.add(nodeObj);
+
+      // Force graph to recognize new node
+      graph.graphData(graphData);
+
+      // Pulse animation at spawn
+      let pulsePhase = 0;
+      function pulse() {
+        if (!newNode._sphere) return;
+        pulsePhase += 0.2;
+        const scale = 1 + Math.sin(pulsePhase) * 0.3;
+        newNode._sphere.scale.setScalar(scale);
+        if (newNode._ring) {
+          newNode._ring.material.opacity = 0.5 + Math.sin(pulsePhase) * 0.3;
+        }
+        if (pulsePhase < Math.PI * 4) {
+          requestAnimationFrame(pulse);
+        } else {
+          // Settle
+          newNode._sphere.scale.setScalar(1);
+          if (newNode._ring) newNode._ring.material.opacity = 0.3;
+        }
+      }
+      pulse();
+
+      // Fly camera to new node
+      const distance = 100;
+      const target = { x: spawnPos.x, y: spawnPos.y, z: spawnPos.z };
+      const cameraPos = {
+        x: spawnPos.x,
+        y: spawnPos.y + 30,
+        z: spawnPos.z + distance,
+      };
+      graph.cameraPosition(cameraPos, target, 1500);
+
+      // Open panel after camera arrives
+      setTimeout(() => {
+        openPanel(newNode);
+      }, 1000);
+
+      // Rebuild legend for new group
+      buildLegend();
+    }
+
+    function highlightChatNodes(nodeIds) {
+      const idSet = new Set(nodeIds);
+      // Reset all first
+      clearHighlights();
+      // Highlight answer nodes
+      for (const node of graphData.nodes) {
+        if (idSet.has(node.id) && node._sphere) {
+          node._sphere.material.color.setHex(0xffffff);
+          node._sphere.material.opacity = 1;
+          node._sphere.scale.setScalar(1.8);
+          node._sphere.material.emissive = new THREE.Color(0xd4a843);
+          node._sphere.material.emissiveIntensity = 0.4;
+          if (node._ring) {
+            node._ring.material.color.setHex(0xffffff);
+            node._ring.material.opacity = 0.7;
+            node._ring.scale.setScalar(1.4);
+          }
+        } else if (node._sphere) {
+          // Dim others slightly
+          node._sphere.material.opacity = 0.35;
+          node._sphere.material.emissiveIntensity = 0;
+        }
+      }
+      graph.linkOpacity(link => {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        return (idSet.has(src) && idSet.has(tgt)) ? 0.6 : 0.1;
+      });
+      graph.linkWidth(link => {
+        const src = typeof link.source === 'object' ? link.source.id : link.source;
+        const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+        return (idSet.has(src) && idSet.has(tgt)) ? 1.5 : 0.2;
+      });
+      graph.linkColor(() => 'rgba(212,168,67,0.4)');
+    }
+
+    chatSend.addEventListener('click', () => {
+      const q = chatInput.value.trim();
+      if (q) {
+        chatInput.value = '';
+        sendChat(q);
+      }
+    });
+
+    chatInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const q = chatInput.value.trim();
+        if (q) {
+          chatInput.value = '';
+          sendChat(q);
+        }
+      }
+    });
+
+    // ─── Voice: Speech Synthesis (TTS) ─────────────────────────────────────
+    let ttsVoice = null;
+    function initTTS() {
+      if (!('speechSynthesis' in window)) return;
+      const loadVoices = () => {
+        const voices = speechSynthesis.getVoices();
+        // Prefer British English
+        ttsVoice = voices.find(v => v.lang.startsWith('en-GB') || v.lang.startsWith('en-UK'))
+                 || voices.find(v => v.lang.startsWith('en'))
+                 || voices[0];
+      };
+      loadVoices();
+      speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    function speak(text) {
+      if (!('speechSynthesis' in window) || !text) return;
+      // Cancel any ongoing speech
+      speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.voice = ttsVoice;
+      utter.rate = 0.95;
+      utter.pitch = 1;
+      utter.volume = 1;
+      speechSynthesis.speak(utter);
+    }
+
+    // ─── Voice: Speech Recognition (STT) ───────────────────────────────────
+    let recognition = null;
+    let isListening = false;
+    const voiceBtn = document.getElementById('chat-voice');
+    const statusEl = document.getElementById('chat-status');
+
+    function initSTT() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        voiceBtn.style.display = 'none';
+        return;
+      }
+      recognition = new SpeechRecognition();
+      recognition.lang = 'en-GB';
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => {
+        isListening = true;
+        voiceBtn.classList.add('listening');
+        statusEl.innerHTML = '<span class="chat-status-dot listening"></span>● listening…';
+      };
+
+      recognition.onend = () => {
+        isListening = false;
+        voiceBtn.classList.remove('listening');
+      };
+
+      recognition.onerror = (e) => {
+        isListening = false;
+        voiceBtn.classList.remove('listening');
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          statusEl.innerHTML = `<span style="color:#e76f51">Mic error: ${escapeHtml(e.error)}</span>`;
+          setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
+        } else {
+          statusEl.innerHTML = '';
+        }
+      };
+
+      let finalTranscript = '';
+      recognition.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const transcript = e.results[i][0].transcript;
+          if (e.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+        if (interim) {
+          statusEl.innerHTML = `<span class="chat-status-dot listening"></span>● ${escapeHtml(interim)}`;
+        }
+        if (finalTranscript) {
+          chatInput.value = finalTranscript.trim();
+        }
+      };
+    }
+
+    function toggleListening() {
+      if (!recognition) return;
+      if (isListening) {
+        recognition.stop();
+        return;
+      }
+      // Ensure audio context is unlocked (first user interaction)
+      if (speechSynthesis.getVoices().length === 0) {
+        speechSynthesis.getVoices(); // trigger
+      }
+      finalTranscript = '';
+      chatInput.value = '';
+      statusEl.innerHTML = '<span class="chat-status-dot listening"></span>● listening…';
+      try {
+        recognition.start();
+      } catch (e) {
+        // Already started
+      }
+    }
+
+    voiceBtn.addEventListener('click', toggleListening);
+
+    // Unlock audio on first user interaction
+    function unlockAudio() {
+      if (speechSynthesis.getVoices().length === 0) {
+        speechSynthesis.getVoices();
+      }
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+    }
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
+
+    // ─── Modified sendChat to speak answer ──────────────────────────────────
+    const originalSendChat = sendChat;
+    sendChat = async function(question) {
+      // Update status to thinking
+      statusEl.innerHTML = '<span class="chat-status-dot thinking"></span>● thinking…';
+      try {
+        await originalSendChat(question);
+        // Speak the answer after rendering
+        const answerText = chatAnswer.textContent || '';
+        // Clean up: remove "Answer from X notes" prefix
+        const cleanAnswer = answerText.replace(/^Answer from \d+ notes?\s*/, '').trim();
+        if (cleanAnswer) speak(cleanAnswer);
+        statusEl.innerHTML = '';
+      } catch (e) {
+        statusEl.innerHTML = '';
+        throw e;
+      }
+    };
+
+    // ─── Boot greeting ─────────────────────────────────────────────────────
+    async function bootGreeting() {
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: '__BOOT__' }),
+        });
+        const data = await res.json();
+        if (res.ok && data.answer) {
+          // Speak the boot greeting
+          speak(data.answer);
+          // Show briefly in chat bar
+          chatAnswer.classList.remove('empty');
+          chatAnswer.innerHTML = `<div style="color:var(--accent); font-style:italic">${escapeHtml(data.answer)}</div>`;
+          // Clear after 5 seconds
+          setTimeout(() => {
+            if (chatAnswer.innerHTML.includes('Good evening')) {
+              chatAnswer.classList.add('empty');
+              chatAnswer.innerHTML = '';
+            }
+          }, 5000);
+        }
+      } catch (e) {
+        console.warn('Boot greeting failed:', e);
+      }
+    }
+
+    // ─── Init ────────────────────────────────────────────────────────────
+    initTTS();
+    initSTT();
+    initStarfield();
+    initGraph();
+    // Boot greeting after graph loads
+    setTimeout(bootGreeting, 1500);
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.min.js"></script>
+</body>
+</html>
